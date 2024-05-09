@@ -170,7 +170,7 @@ impl Device {
         ) {
             device.set_alias(addr, broadcast, netmask)?;
         }
-        
+
         if let (Some(IpAddr::V4(addr)), Some(IpAddr::V4(netmask))) = (config.address, config.netmask) {
             device.set_route(Route {
                 addr,
@@ -224,7 +224,7 @@ impl Device {
             if let Err(err) = siocaifaddr(ctl.as_raw_fd(), &req) {
                 return Err(io::Error::from(err).into());
             }
-            
+
             Ok(())
         }
     }
@@ -240,14 +240,6 @@ impl Device {
     }
 
     fn set_route(&mut self, route: Route) -> Result<()> {
-        let route_dest = route.dest
-            .map(|d| Cow::Owned(d.to_string()))
-            .or_else(|| self.tun_name.as_ref().map(|s| Cow::Borrowed(s.as_str())));
-
-        let Some(route_dest) = route_dest else {
-            return Err(Error::InvalidName)
-        };
-
         if let Some(v) = &self.route {
             let prefix_len = ipnet::ip_mask_to_prefix(IpAddr::V4(v.netmask))
                 .map_err(|_| Error::InvalidConfig)?;
@@ -260,7 +252,7 @@ impl Device {
                 "delete",
                 "-net",
                 &format!("{}/{}", network, prefix_len),
-                route_dest.as_ref(),
+                &v.addr.to_string(),
             ];
             run_command("route", &args)?;
             log::info!("route {}", args.join(" "));
@@ -274,7 +266,7 @@ impl Device {
             "add",
             "-net",
             &format!("{}/{}", route.addr, prefix_len),
-            route_dest.as_ref(),
+            &route.addr.to_string(),
         ];
         run_command("route", &args)?;
         log::info!("route {}", args.join(" "));
