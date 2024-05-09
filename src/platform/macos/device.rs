@@ -19,7 +19,7 @@ use crate::{
     error::{Error, Result},
     platform::{
         macos::sys::*,
-        posix::{self, ipaddr_to_sockaddr, sockaddr_to_rs_addr, sockaddr_union, Fd},
+        posix::{self, ipaddr_to_sockaddr, sockaddr_to_rs_addr, sockaddr_union},
     },
 };
 
@@ -37,12 +37,13 @@ use std::{
     os::unix::io::{AsRawFd, IntoRawFd, RawFd},
     ptr,
 };
+use std::borrow::Cow;
 
 #[derive(Clone, Copy)]
 struct Route {
     addr: Ipv4Addr,
     netmask: Ipv4Addr,
-    dest: Ipv4Addr,
+    dest: Option<Ipv4Addr>,
 }
 
 /// A TUN device using the TUN macOS driver.
@@ -71,7 +72,7 @@ impl Device {
         let mtu = config.mtu.unwrap_or(crate::DEFAULT_MTU);
         if let Some(fd) = config.raw_fd {
             let close_fd_on_drop = config.close_fd_on_drop.unwrap_or(true);
-            let tun = Fd::new(fd, close_fd_on_drop).map_err(|_| io::Error::last_os_error())?;
+            let tun = posix::Fd::new(fd, close_fd_on_drop).map_err(|_| io::Error::last_os_error())?;
             let device = Device {
                 tun_name: None,
                 tun: posix::Tun::new(tun, mtu, config.platform_config.packet_information),
@@ -161,17 +162,14 @@ impl Device {
         };
 
         device.configure(config)?;
-        device.set_alias(
-            config
-                .address
-                .unwrap_or(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))),
-            config
-                .destination
-                .unwrap_or(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 255))),
-            config
-                .netmask
-                .unwrap_or(IpAddr::V4(Ipv4Addr::new(255, 255, 255, 0))),
-        )?;
+
+        if let (Some(addr), Some(broadcast), Some(netmask)) = (
+            config.address,
+            config.broadcast,
+            config.netmask,
+        ) {
+            device.set_alias(addr, broadcast, netmask)?;
+        }
 
         Ok(device)
     }
@@ -221,7 +219,7 @@ impl Device {
             let route = Route {
                 addr,
                 netmask: mask,
-                dest: broadaddr,
+                dest: None,
             };
             if let Err(e) = self.set_route(route) {
                 log::warn!("{e:?}");
@@ -241,6 +239,14 @@ impl Device {
     }
 
     fn set_route(&mut self, route: Route) -> Result<()> {
+        let route_dest = route.dest
+            .map(|d| Cow::Owned(d.to_string()))
+            .or_else(|| self.tun_name.as_ref().map(|s| Cow::Borrowed(s.as_str())));
+
+        let Some(route_dest) = route_dest else {
+            return Err(Error::InvalidName)
+        };
+
         if let Some(v) = &self.route {
             let prefix_len = ipnet::ip_mask_to_prefix(IpAddr::V4(v.netmask))
                 .map_err(|_| Error::InvalidConfig)?;
@@ -253,7 +259,7 @@ impl Device {
                 "delete",
                 "-net",
                 &format!("{}/{}", network, prefix_len),
-                &v.dest.to_string(),
+                route_dest.as_ref(),
             ];
             run_command("route", &args)?;
             log::info!("route {}", args.join(" "));
@@ -267,7 +273,7 @@ impl Device {
             "add",
             "-net",
             &format!("{}/{}", route.addr, prefix_len),
-            &route.dest.to_string(),
+            route_dest.as_ref(),
         ];
         run_command("route", &args)?;
         log::info!("route {}", args.join(" "));
@@ -380,7 +386,7 @@ impl AbstractDevice for Device {
                 return Err(io::Error::from(err).into());
             }
             if let Some(mut route) = self.route {
-                route.dest = value;
+                route.dest = Some(value);
                 self.set_route(route)?;
             }
             Ok(())
