@@ -37,12 +37,11 @@ use std::{
     os::unix::io::{AsRawFd, IntoRawFd, RawFd},
     ptr,
 };
-use std::borrow::Cow;
+use ipnet::Ipv4Net;
 
 #[derive(Clone, Copy)]
 struct Route {
-    addr: Ipv4Addr,
-    netmask: Ipv4Addr,
+    network: ipnet::Ipv4Net,
     dest: Option<Ipv4Addr>,
 }
 
@@ -173,8 +172,8 @@ impl Device {
 
         if let (Some(IpAddr::V4(addr)), Some(IpAddr::V4(netmask))) = (config.address, config.netmask) {
             device.set_route(Route {
-                addr,
-                netmask,
+                network: Ipv4Net::with_netmask(addr.into(), netmask.into())
+                    .map_err(|e| Error::InvalidConfig)?,
                 dest: None,
             })?;
         }
@@ -241,32 +240,25 @@ impl Device {
 
     fn set_route(&mut self, route: Route) -> Result<()> {
         if let Some(v) = &self.route {
-            let prefix_len = ipnet::ip_mask_to_prefix(IpAddr::V4(v.netmask))
-                .map_err(|_| Error::InvalidConfig)?;
-            let network = ipnet::Ipv4Net::new(v.addr, prefix_len)
-                .map_err(|e| Error::InvalidConfig)?
-                .network();
             // command: route -n delete -net 10.0.0.0/24 10.0.0.1
             let args = [
                 "-n",
                 "delete",
                 "-net",
-                &format!("{}/{}", network, prefix_len),
-                &v.addr.to_string(),
+                &v.network.network().to_string(),
+                &v.network.addr().to_string(),
             ];
             run_command("route", &args)?;
             log::info!("route {}", args.join(" "));
         }
 
         // command: route -n add -net 10.0.0.9/24 10.0.0.1
-        let prefix_len = ipnet::ip_mask_to_prefix(IpAddr::V4(route.netmask))
-            .map_err(|_| Error::InvalidConfig)?;
         let args = [
             "-n",
             "add",
             "-net",
-            &format!("{}/{}", route.addr, prefix_len),
-            &route.addr.to_string(),
+            &route.network.network().to_string(),
+            &route.network.addr().to_string(),
         ];
         run_command("route", &args)?;
         log::info!("route {}", args.join(" "));
@@ -348,7 +340,7 @@ impl AbstractDevice for Device {
                 return Err(io::Error::from(err).into());
             }
             if let Some(mut route) = self.route {
-                route.addr = value;
+                route.network = Ipv4Net::new(value, route.network.prefix_len()).map_err(|e| Error::InvalidConfig)?;
                 self.set_route(route)?;
             }
             Ok(())
@@ -440,7 +432,7 @@ impl AbstractDevice for Device {
                 return Err(io::Error::from(err).into());
             }
             if let Some(mut route) = self.route {
-                route.netmask = value;
+                route.network = Ipv4Net::with_netmask(route.network.addr(), value).map_err(|e| Error::InvalidConfig)?;
                 self.set_route(route)?;
             }
             Ok(())
