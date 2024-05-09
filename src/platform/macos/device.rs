@@ -170,6 +170,14 @@ impl Device {
         ) {
             device.set_alias(addr, broadcast, netmask)?;
         }
+        
+        if let (Some(IpAddr::V4(addr)), Some(IpAddr::V4(netmask))) = (config.address, config.netmask) {
+            device.set_route(Route {
+                addr,
+                netmask,
+                dest: None,
+            })?;
+        }
 
         Ok(device)
     }
@@ -216,14 +224,7 @@ impl Device {
             if let Err(err) = siocaifaddr(ctl.as_raw_fd(), &req) {
                 return Err(io::Error::from(err).into());
             }
-            let route = Route {
-                addr,
-                netmask: mask,
-                dest: None,
-            };
-            if let Err(e) = self.set_route(route) {
-                log::warn!("{e:?}");
-            }
+            
             Ok(())
         }
     }
